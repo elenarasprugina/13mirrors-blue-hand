@@ -14,7 +14,8 @@
     INTRO_SEEN: "bh_intro_seen",
     MODE: "bh_mode",
     DAY_ENTERED_PREFIX: "bh_day_entered_", // + dayIndex -> "YYYY-MM-DD" (moscow calendar date when first entered)
-    FINALE_PLAYED: "bh_finale_played" // "YYYY-MM-DD" of the moscow date it was completed, once
+    FINALE_PLAYED: "bh_finale_played", // "YYYY-MM-DD" of the moscow date it was completed, once
+    PRACTICE_CHOICE_PREFIX: "bh_practice_choice_day_" // + dayIndex -> "A" | "B"
   };
 
   function lsGet(key) {
@@ -130,6 +131,9 @@
     Object.keys(screens).forEach(function (k) {
       screens[k].classList.toggle("is-visible", k === name);
     });
+    // На финале свой золотой логотип (.finale-logo) — деликатный синий
+    // водяной знак (.brand-mark) там прячем, чтобы не дублировать бренд.
+    document.body.classList.toggle("bh-hide-watermark", name === "finale");
   }
 
   function el(tag, cls, html) {
@@ -137,6 +141,53 @@
     if (cls) e.className = cls;
     if (html !== undefined) e.innerHTML = html;
     return e;
+  }
+
+  /* ----------------------------- Мини-markdown для текстов дня -----------------------------
+     Поддерживает: абзацы (пустая строка), списки "- " и "1. ", **bold** внутри строк.
+     Ничего не сокращает и не переписывает — только превращает уже имеющуюся в исходном
+     тексте разметку в семантичный HTML (см. ТЗ, раздел 13). */
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function inlineMd(s) {
+    return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  }
+  function renderRich(md, opts) {
+    opts = opts || {};
+    var frag = document.createDocumentFragment();
+    if (!md) return frag;
+    var blocks = md.trim().split(/\n\s*\n/);
+    blocks.forEach(function (blockRaw) {
+      var block = blockRaw.trim();
+      if (!block) return;
+      var lines = block.split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+      var isUl = lines.length > 0 && lines.every(function (l) { return /^-\s+/.test(l); });
+      var isOl = lines.length > 0 && lines.every(function (l) { return /^\d+\.\s+/.test(l); });
+      if (isUl) {
+        var ul = el("ul", "rich-list");
+        lines.forEach(function (l) {
+          var li = document.createElement("li");
+          li.innerHTML = inlineMd(l.replace(/^-\s+/, ""));
+          ul.appendChild(li);
+        });
+        frag.appendChild(ul);
+      } else if (isOl) {
+        var ol = el("ol", "rich-list");
+        lines.forEach(function (l) {
+          var li = document.createElement("li");
+          li.innerHTML = inlineMd(l.replace(/^\d+\.\s+/, ""));
+          ol.appendChild(li);
+        });
+        frag.appendChild(ol);
+      } else {
+        var p = document.createElement("p");
+        if (opts.emphasize) p.className = "rich-emphasis";
+        p.innerHTML = lines.map(inlineMd).join("<br>");
+        frag.appendChild(p);
+      }
+    });
+    return frag;
   }
 
   /* ----------------------------- Приложение ----------------------------- */
@@ -150,6 +201,7 @@
       screens.intro = document.getElementById("screen-intro");
       screens.waiting = document.getElementById("screen-waiting");
       screens.scene = document.getElementById("screen-scene");
+      screens.day = document.getElementById("screen-day");
       screens.finale = document.getElementById("screen-finale");
 
       this.mode = detectMode();
@@ -165,7 +217,7 @@
         this.renderCurrentState();
       }
 
-      this.bindModal();
+      this.renderBrandWatermark();
 
       // Периодическая проверка смены дня/фазы (полночь по Москве и т.п.)
       var self = this;
@@ -179,7 +231,11 @@
         fresh.currentDay !== this.state.currentDay;
       this.state = fresh;
       if (changed && lsGet(LS.INTRO_SEEN) === "1") {
-        // не прерываем, если открыта карта дня — просто обновим сцену под ней
+        // Смена дня строго в 00:00 МСК: если в этот момент открыта карта
+        // старого дня — закрываем её, чтобы она не осталась поверх новой сцены.
+        if (screens.day && screens.day.classList.contains("is-visible")) {
+          this.closeDayCard();
+        }
         this.renderCurrentState();
       }
     },
@@ -195,15 +251,37 @@
       }
     },
 
-    /* ---------------- INTRO ---------------- */
+    /* ---------------- Деликатный водяной знак 13 MIRRORS (раздел 4 ТЗ) ----------------
+       Один фиксированный элемент на всё приложение — показывается поверх сцены и
+       карточки дня, прячется на финале (там свой золотой логотип, см. finale-logo). */
+    renderBrandWatermark: function () {
+      var mark = el("div", "brand-mark");
+      var img = el("img", null);
+      img.src = "assets/logo_watermark.png";
+      img.alt = "13 MIRRORS";
+      mark.appendChild(img);
+      document.getElementById("app").appendChild(mark);
+    },
+
+    /* ---------------- INTRO ----------------
+       Раздел 9 ТЗ: картинка сверху, текст — отдельно, на плотной тёмно-синей
+       подложке снизу. Не раскладываем текст поверх сложной картинки —
+       так он остаётся читаемым при любой длине. */
     renderIntroScreen: function () {
       var root = screens.intro;
       root.innerHTML = "";
-      var bg = el("img", "screen-bg");
-      bg.src = "assets/hands_master.jpg";
-      bg.alt = "";
-      var veil = el("div", "screen-veil");
-      var content = el("div", "screen-content");
+      root.classList.add("screen-intro-layout");
+
+      var wrap = el("div", "intro-wrap");
+
+      var imageBox = el("div", "intro-image");
+      var img = el("img", null);
+      img.src = "assets/intro_panorama.webp";
+      img.alt = "";
+      imageBox.appendChild(img);
+      wrap.appendChild(imageBox);
+
+      var panel = el("div", "intro-panel");
 
       var introMd = (window.BH_INTRO_TEXT || "").trim();
       var lines = introMd
@@ -212,7 +290,7 @@
         .map(function (l) { return l.replace(/\*\*/g, "").trim(); });
 
       lines.forEach(function (line) {
-        content.appendChild(el("p", null, line));
+        panel.appendChild(el("p", null, line));
       });
 
       var btn = el("button", "btn primary", "Войти в маршрут");
@@ -221,11 +299,10 @@
         App.state = computeRouteState();
         App.renderCurrentState();
       });
-      content.appendChild(btn);
+      panel.appendChild(btn);
 
-      root.appendChild(bg);
-      root.appendChild(veil);
-      root.appendChild(content);
+      wrap.appendChild(panel);
+      root.appendChild(wrap);
     },
 
     /* ---------------- WAITING ---------------- */
@@ -265,10 +342,13 @@
       bg.alt = "Маршрут Синяя Рука";
       wrap.appendChild(bg);
 
-      var topbar = el("div", "scene-topbar");
-      var pill = el("div", "pill", "День " + this.state.currentDay + " из " + CFG.totalDays + " · " + MODE_LABELS[this.mode]);
-      topbar.appendChild(pill);
-      wrap.appendChild(topbar);
+      // Раздел 3 ТЗ: только номер дня (между звёзд, верх сцены) и тихая
+      // подпись режима внизу слева — без плашки "День X из 13 · Формат".
+      var dayNum = el("div", "scene-daynum", String(this.state.currentDay));
+      wrap.appendChild(dayNum);
+
+      var modeLabel = el("div", "scene-mode-label", "Формат: " + MODE_LABELS[this.mode]);
+      wrap.appendChild(modeLabel);
 
       var sparkLayer = el("div", "spark-layer");
       wrap.appendChild(sparkLayer);
@@ -278,12 +358,19 @@
       for (var i = 1; i <= 13; i++) {
         var p = POINTS[i];
         var dayState = this.getDayState(i);
-        var btn = el("button", "hotspot state-" + dayState);
+        // День 7 и 13 — центральные узлы (мост между ладонями), для них
+        // активная зона держится крупнее, чтобы не приходилось её искать (раздел 6 ТЗ).
+        var isCentral = (i === 7 || i === 13);
+        var btn = el("button", "hotspot state-" + dayState + (isCentral ? " hotspot-central" : ""));
         btn.style.left = p.x + "%";
         btn.style.top = p.y + "%";
         btn.setAttribute("data-day", i);
         btn.setAttribute("aria-label", "День " + i);
+        // halo — усиление уже существующего светового узла картинки (раздел 5 ТЗ);
+        // dot — маленькое яркое ядро поверх него, без отдельного жёлтого кружка.
+        var halo = el("span", "halo");
         var dot = el("span", "dot");
+        btn.appendChild(halo);
         btn.appendChild(dot);
         if (dayState === "idle" || dayState === "active") {
           btn.addEventListener("click", this.onDayNodeClick.bind(this, i));
@@ -309,7 +396,10 @@
         var wrap = App._sceneWrap;
         if (wrap) {
           var hs = wrap.querySelector('.hotspot[data-day="' + dayNumber + '"]');
-          if (hs) hs.className = "hotspot state-active";
+          if (hs) {
+            var central = (dayNumber === 7 || dayNumber === 13) ? " hotspot-central" : "";
+            hs.className = "hotspot state-active" + central;
+          }
         }
       });
     },
@@ -340,18 +430,28 @@
       var totalMs = 2500;
 
       if (sameSpot) {
-        // просто усиливающееся свечение в центре (точки 6/7/13)
+        // просто усиливающееся свечение в центре (точки 6/7/13, и День 13 —
+        // раздел 22 ТЗ: искорка никуда не улетает)
         setTimeout(function () {
           originBurst.style.opacity = "0";
         }, totalMs - 250);
+        setTimeout(function () { layer.innerHTML = ""; }, totalMs + 300);
         setTimeout(done, totalMs);
         return;
       }
 
-      // path: лёгкая дуга между точками
-      var mx = (fx + tx) / 2 + (ty - fy) * 0.12;
-      var my = (fy + ty) / 2 - (tx - fx) * 0.12;
-      var pathData = "M " + fx + " " + fy + " Q " + mx + " " + my + " " + tx + " " + ty;
+      // path: живая волна (S-образная кривая через две контрольные точки в
+      // противоположные стороны), а не жёсткая дуга — хотфикс п.5
+      var dx = tx - fx, dy = ty - fy;
+      // перпендикуляр к линии движения, нормированный
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      var nx = -dy / len, ny = dx / len;
+      var wave = Math.min(46, len * 0.16);
+      var c1x = fx + dx * 0.32 + nx * wave;
+      var c1y = fy + dy * 0.32 + ny * wave;
+      var c2x = fx + dx * 0.68 - nx * wave;
+      var c2y = fy + dy * 0.68 - ny * wave;
+      var pathData = "M " + fx + " " + fy + " C " + c1x + " " + c1y + " " + c2x + " " + c2y + " " + tx + " " + ty;
 
       var svgNS = "http://www.w3.org/2000/svg";
       var svg = document.createElementNS(svgNS, "svg");
@@ -367,7 +467,7 @@
 
       requestAnimationFrame(function () {
         path.style.transition = "opacity 0.2s ease";
-        path.style.opacity = "1";
+        path.style.opacity = "0.55"; /* легче, рассеяннее — хотфикс п.5 */
         path.animate(
           [{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }],
           { duration: totalMs * 0.62, delay: 250, fill: "forwards", easing: "ease-in-out" }
@@ -415,108 +515,311 @@
           });
           dot.style.transition = "opacity 0.25s ease";
           dot.style.opacity = "0";
+
+          // Тонкий след искорки постепенно тает и не остаётся на руке
+          // толстой постоянной линией (раздел 7 ТЗ).
+          path.style.transition = "opacity 0.9s ease";
+          path.style.opacity = "0";
         }
       }
       requestAnimationFrame(step);
 
+      setTimeout(function () {
+        // полная очистка — ничего не должно остаться поверх сцены
+        layer.innerHTML = "";
+      }, totalMs + 500);
+
       setTimeout(done, totalMs);
     },
 
-    /* ---------------- DAY CARD ---------------- */
-    bindModal: function () {
-      this.modalBackdrop = document.getElementById("modal-backdrop");
-      var self = this;
-      this.modalBackdrop.addEventListener("click", function (e) {
-        if (e.target === self.modalBackdrop) self.closeDayCard();
-      });
-    },
-
+    /* ---------------- DAY CARD ----------------
+       Раздел 8 ТЗ: карта дня — полноэкранная страница со своим обычным
+       вертикальным скроллом (не окно-в-окне, без внутреннего scrollbar). */
     openDayCard: function (dayNumber) {
       this.dayCardOpenDay = dayNumber;
       var day = DAYS[dayNumber - 1];
       var card = document.getElementById("day-card");
       card.innerHTML = "";
-      card.scrollTop = 0;
 
+      // ---- шапка 16:9, без текста на самой картинке (раздел 10 ТЗ) ----
+      var headerImg = el("div", "day-card-header-image");
+      var img = el("img", null);
+      img.src = day.headerImage;
+      img.alt = day.kin;
+      headerImg.appendChild(img);
+      card.appendChild(headerImg);
+
+      // ---- День / Kin / заголовок ----
       var header = el("div", "day-card-header");
-      header.appendChild(el("h1", null, day.title));
+      header.appendChild(el("div", "day-card-eyebrow", "День " + day.day + " · " + day.date));
+      header.appendChild(el("h1", null, day.kin));
       card.appendChild(header);
 
+      // ---- Dreamspell-шапка: Печать / Тон ----
       var sPT = el("section");
       var pair = el("div", "pair-block");
       var colSeal = el("div", "col");
       colSeal.appendChild(el("div", "label", "Печать"));
-      colSeal.appendChild(el("p", null, day.seal));
-      colSeal.appendChild(el("p", "dim", day.sealShort));
+      colSeal.appendChild(el("p", null, day.seal.name));
+      colSeal.appendChild(el("p", "dim", day.seal.short));
       var colTone = el("div", "col");
       colTone.appendChild(el("div", "label", "Тон"));
-      colTone.appendChild(el("p", null, day.tone));
-      colTone.appendChild(el("p", "dim", day.toneShort));
+      colTone.appendChild(el("p", null, day.tone.name));
+      colTone.appendChild(el("p", "dim", day.tone.short));
       pair.appendChild(colSeal);
       pair.appendChild(colTone);
       sPT.appendChild(pair);
       card.appendChild(sPT);
 
-      var sConn = el("section");
-      sConn.appendChild(el("div", "label", "Связка"));
-      sConn.appendChild(el("p", null, day.connection));
-      card.appendChild(sConn);
-
-      var sAbout = el("section");
-      sAbout.appendChild(el("div", "label", "О чём этот день"));
-      sAbout.appendChild(el("p", null, day.about));
-      card.appendChild(sAbout);
-
-      var sPrac = el("section");
-      sPrac.appendChild(el("div", "label", "Практики"));
-      var p1 = el("div", "practice-block");
-      p1.appendChild(el("h3", null, day.practice1.title));
-      p1.appendChild(el("p", null, day.practice1.text));
-      var p2 = el("div", "practice-block");
-      p2.appendChild(el("h3", null, day.practice2.title));
-      p2.appendChild(el("p", null, day.practice2.text));
-      sPrac.appendChild(p1);
-      sPrac.appendChild(p2);
-      card.appendChild(sPrac);
-
-      var sTrace = el("section");
-      sTrace.appendChild(el("div", "label", "След"));
-      var traceBlock = el("div", "trace-block");
-      if (this.mode === "observation") {
-        traceBlock.appendChild(el("p", null, "Оставить след доступно в форматах с сопровождением: Путешествие, Погружение."));
-      } else {
-        var url = this.mode === "journey" ? CFG.links.journey : CFG.links.immersion;
-        var linkBtn = el("a", "btn link", "Оставить след");
-        linkBtn.href = url;
-        linkBtn.target = "_blank";
-        linkBtn.rel = "noopener noreferrer";
-        traceBlock.appendChild(el("p", "dim", "Сопровождение происходит в Telegram."));
-        traceBlock.appendChild(linkBtn);
+      // ---- Фокус дня (только для дней 1–12, раздел 11/28 ТЗ) ----
+      if (!day.isFinal && day.focus) {
+        var sFocus = el("section");
+        sFocus.appendChild(el("div", "label", "Фокус дня"));
+        sFocus.appendChild(renderRich(day.focus, { emphasize: false }));
+        card.appendChild(sFocus);
       }
-      sTrace.appendChild(traceBlock);
-      card.appendChild(sTrace);
+
+      if (day.isFinal) {
+        this.renderFinalDayCard(card, day);
+      } else {
+        this.renderRegularDayCard(card, day);
+      }
+
+      showScreen("day");
+      window.scrollTo(0, 0);
+    },
+
+    /* ---- День 13: только вопрос сборки + кнопка "Собрать маршрут" ---- */
+    renderFinalDayCard: function (card, day) {
+      var sQ = el("section", "day13-question-section");
+      var q = el("p", "rich-emphasis");
+      q.textContent = day.finalQuestion;
+      sQ.appendChild(q);
+      card.appendChild(sQ);
 
       var actions = el("div", "day-card-actions");
-      if (dayNumber === 13 && day.finalCta) {
-        var finalBtn = el("button", "btn primary", day.finalCta);
-        finalBtn.addEventListener("click", function () {
-          App.closeDayCard();
-          App.startDay13Finale();
-        });
-        actions.appendChild(finalBtn);
-      }
+      var finalBtn = el("button", "btn primary", day.finalCta);
+      finalBtn.addEventListener("click", function () {
+        // Хотфикс п.12: без промежуточного показа сцены рук — сразу в финал,
+        // иначе между картой и видео на мгновение мелькают руки.
+        App.startDay13Finale();
+      });
+      actions.appendChild(finalBtn);
       var backBtn = el("button", "btn ghost", "Вернуться в пространство маршрута");
       backBtn.addEventListener("click", function () { App.closeDayCard(); });
       actions.appendChild(backBtn);
       card.appendChild(actions);
 
-      this.modalBackdrop.classList.add("is-visible");
-      card.scrollTop = 0;
-      requestAnimationFrame(function () { card.scrollTop = 0; });
+      // Предзагрузка финального видео, пока пользователь ещё на карте —
+      // к моменту нажатия "Собрать маршрут" оно уже в кэше браузера (хотфикс п.12).
+      if (!document.getElementById("bh-video-preload")) {
+        var preload = document.createElement("link");
+        preload.id = "bh-video-preload";
+        preload.rel = "preload";
+        preload.as = "video";
+        preload.href = "assets/day13_namaste.mp4";
+        document.head.appendChild(preload);
+      }
+    },
+
+    /* ---- Дни 1–12: главный вопрос, закрытый выбор практики A/B (рядом), След ---- */
+    renderRegularDayCard: function (card, day) {
+      var sQ = el("section", "main-question-section");
+      sQ.appendChild(el("div", "label", "Главный вопрос"));
+      sQ.appendChild(renderRich(day.mainQuestion, { emphasize: true }));
+      card.appendChild(sQ);
+
+      var sPrac = el("section");
+      // relative-обёртка — от неё считаются координаты внутренней искорки (раздел 14 ТЗ)
+      var practiceStage = el("div", "practice-stage");
+      var practiceWrap = el("div", "practice-choice-wrap");
+      practiceStage.appendChild(practiceWrap);
+      var innerSparkLayer = el("div", "inner-spark-layer");
+      practiceStage.appendChild(innerSparkLayer);
+      sPrac.appendChild(practiceStage);
+      card.appendChild(sPrac);
+
+      // «След дня» — секция видна сразу, заголовок «След дня» служит
+      // видимой целью полёта искорки; вопрос и рамка/CTA (traceBody)
+      // проявляются только после её прилёта (или сразу — для тех, кто
+      // уже выбирал практику раньше).
+      var sTrace = el("section", "trace-section");
+      var traceHeading = el("h2", "trace-heading", "След дня");
+      sTrace.appendChild(traceHeading);
+      var traceBody = el("div", "fade-block trace-body");
+      sTrace.appendChild(traceBody);
+      card.appendChild(sTrace);
+
+      var actions = el("div", "day-card-actions");
+      var backBtn = el("button", "btn ghost", "Вернуться в пространство маршрута");
+      backBtn.addEventListener("click", function () { App.closeDayCard(); });
+      actions.appendChild(backBtn);
+      card.appendChild(actions);
+
+      var choiceKey = LS.PRACTICE_CHOICE_PREFIX + day.day;
+      var storedChoice = lsGet(choiceKey);
+
+      var self = this;
+
+      // ---- «След дня»: вопрос жёлтым — отдельно над рамкой, в рамке —
+      // только режимный блок действия. Сам заголовок «След дня» рисуется
+      // отдельно и всегда виден (см. traceHeading выше). ----
+      function fillTraceBody() {
+        traceBody.innerHTML = "";
+        traceBody.appendChild(renderRich(day.traceQuestion, { emphasize: true }));
+
+        var frame = el("div", "trace-frame");
+        if (self.mode === "observation") {
+          frame.appendChild(el("p", null, "След доступен в формате Путешествие и Погружение."));
+        } else if (self.mode === "journey") {
+          var linkBtnJ = el("a", "btn link", "Оставить след");
+          linkBtnJ.href = CFG.links.journey;
+          linkBtnJ.target = "_blank";
+          linkBtnJ.rel = "noopener noreferrer";
+          frame.appendChild(linkBtnJ);
+          frame.appendChild(el("p", "trace-note", "✦ Сопровождение в группе «Маршрут Синей Руки»"));
+        } else {
+          var linkBtnI = el("a", "btn link", "Оставить след");
+          linkBtnI.href = CFG.links.immersion;
+          linkBtnI.target = "_blank";
+          linkBtnI.rel = "noopener noreferrer";
+          frame.appendChild(linkBtnI);
+          frame.appendChild(el("p", "trace-note", "✦ Сопровождение лично с Проводником"));
+        }
+        traceBody.appendChild(frame);
+      }
+
+      // ---- Внутренняя искорка: капля стартует из середины НИЖНЕГО КРАЯ
+      // открытой (полноширинной) карточки практики — не из её центра, чтобы
+      // не пролетать поверх текста практики — и опускается змейкой прямо к
+      // заголовку «След дня» (он уже виден — это и есть цель полёта),
+      // покачиваясь вправо-влево с затухающей неравной амплитудой, строго
+      // вокруг вертикальной оси старта — без смещения в сторону A/B.
+      // Цель считается ОДИН раз до начала полёта. Вопрос и рамка/CTA
+      // «Следа дня» раскрываются только после прибытия капли к заголовку —
+      // без дуги, линии и следа. ----
+      function flySpark(openedBlock) {
+        var stageRect = practiceStage.getBoundingClientRect();
+        var fromRect = openedBlock.getBoundingClientRect();
+        var fx = fromRect.left + fromRect.width / 2 - stageRect.left;
+        var fy = fromRect.bottom - stageRect.top; // середина нижнего края карточки
+
+        // Цель — центр заголовка «След дня» (он уже нарисован и виден —
+        // капля летит именно к нему). Считается один раз, до старта полёта.
+        var toRect = traceHeading.getBoundingClientRect();
+        var tx = fx; // строго по вертикальной оси старта — без смещения A/B
+        var ty = toRect.top + toRect.height / 2 - stageRect.top;
+
+        var drop = el("div", "inner-spark-dot");
+        drop.style.left = fx + "px";
+        drop.style.top = fy + "px";
+        innerSparkLayer.appendChild(drop);
+        requestAnimationFrame(function () { drop.style.opacity = "1"; });
+
+        // Раздел 15 ТЗ: если цель не помещается на экране — мягкая заблаговременная
+        // автопрокрутка, чтобы было видно, как капля долетает до «Следа дня».
+        var fitsInView = toRect.top >= 0 && toRect.bottom <= window.innerHeight;
+        if (!fitsInView) {
+          var targetScrollY = window.scrollY + toRect.top - Math.max(24, (window.innerHeight - toRect.height) / 2);
+          window.scrollTo({ top: Math.max(0, targetScrollY), behavior: "smooth" });
+        }
+
+        var duration = 3200; // тайминг из прежнего удачного варианта
+        var startTime = null;
+        var totalDrop = ty - fy;
+        // Затухающая "змейка": несколько волн вправо-влево с уменьшающейся
+        // и неодинаковой амплитудой, гаснущая точно к моменту приземления.
+        // Если расстояние до «Следа дня» небольшое — амплитуда и число волн
+        // уменьшаются пропорционально, чтобы змейка не выглядела тесной/резкой.
+        var swingsFull = [1, -0.62, 0.36, -0.16];
+        var swings = totalDrop < 130 ? [1, -0.5] : swingsFull;
+        var ampByWidth = Math.max(20, Math.min(60, fromRect.width * 0.14));
+        var ampByDrop = totalDrop * 0.4;
+        var baseAmp = Math.max(10, Math.min(ampByWidth, ampByDrop));
+
+        function step(ts) {
+          if (!startTime) startTime = ts;
+          var t = Math.min(1, (ts - startTime) / duration);
+          var easeY = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+          // огибающая амплитуды: 0 в начале и конце, пик в первой трети пути
+          var envelope = Math.sin(Math.PI * t) * (1 - t);
+          var wave = 0;
+          for (var i = 0; i < swings.length; i++) {
+            wave += swings[i] * Math.sin(t * Math.PI * (i + 1));
+          }
+          var sway = wave * envelope * baseAmp;
+
+          drop.style.left = (tx + sway) + "px";
+          drop.style.top = (fy + totalDrop * easeY) + "px";
+
+          if (t < 1) {
+            requestAnimationFrame(step);
+          } else {
+            drop.style.left = tx + "px";
+            drop.style.top = ty + "px";
+            drop.style.transition = "opacity 0.35s ease";
+            drop.style.opacity = "0";
+            // Вопрос и рамка/CTA «Следа дня» раскрываются только ПОСЛЕ
+            // прибытия капли к заголовку (не в полёте).
+            fillTraceBody();
+            requestAnimationFrame(function () { traceBody.classList.add("is-visible"); });
+          }
+        }
+        requestAnimationFrame(step);
+
+        setTimeout(function () { innerSparkLayer.innerHTML = ""; }, duration + 400);
+      }
+
+      function renderChosen(letter, animate) {
+        practiceWrap.innerHTML = "";
+        var chosen = letter === "A" ? day.practiceA : day.practiceB;
+        var otherLetter = letter === "A" ? "B" : "A";
+
+        var openedBlock = el("div", "practice-block opened");
+        openedBlock.appendChild(el("h3", null, chosen.title));
+        openedBlock.appendChild(renderRich(chosen.body));
+        practiceWrap.appendChild(openedBlock);
+
+        var otherBtn = el("button", "practice-btn disabled-choice");
+        otherBtn.textContent = "Практика " + otherLetter;
+        otherBtn.disabled = true;
+        practiceWrap.appendChild(otherBtn);
+
+        if (animate) {
+          flySpark(openedBlock);
+        } else {
+          fillTraceBody();
+          traceBody.classList.add("is-visible");
+        }
+      }
+
+      function renderClosedChoice() {
+        practiceWrap.innerHTML = "";
+        ["A", "B"].forEach(function (letter) {
+          var btn = el("button", "practice-btn");
+          btn.textContent = "Практика " + letter;
+          btn.addEventListener("click", function () {
+            lsSet(choiceKey, letter);
+            renderChosen(letter, /* animate */ true);
+          });
+          practiceWrap.appendChild(btn);
+        });
+      }
+
+      if (storedChoice === "A" || storedChoice === "B") {
+        renderChosen(storedChoice, /* animate */ false);
+      } else {
+        renderClosedChoice();
+      }
     },
 
     closeDayCard: function () {
-      this.modalBackdrop.classList.remove("is-visible");
+      // Раздел 20 ТЗ: возврат в пространство маршрута, состояние дня
+      // сохраняется, пульсация текущей точки восстанавливается (renderScene
+      // перечитывает getDayState заново при каждом вызове).
+      this.renderScene();
+      showScreen("scene");
       if (this._sparkLayer) this._sparkLayer.innerHTML = "";
     },
 
@@ -544,6 +847,33 @@
       video.style.transition = "opacity 0.4s ease";
       stage.appendChild(video);
 
+      // Хотфикс 3.2 п.7: финальные надписи и логотип — поверх ЕЩЁ ИГРАЮЩЕГО
+      // видео. Никакого переключения на отдельный стоп-кадр после видео:
+      // руки естественно доигрывают namaste прямо в ролике, а текст
+      // появляется заранее, пока движение ещё продолжается.
+      var overlay = el("div", "finale-text-overlay");
+      var line1 = el("div", "line line-1", CFG.finale.lines[0]);
+      var line2 = el("div", "line line-2", CFG.finale.lines[1]);
+      overlay.appendChild(line1);
+      overlay.appendChild(line2);
+      stage.appendChild(overlay);
+
+      var logo = el("div", "finale-logo");
+      var logoImg = el("img", null);
+      logoImg.src = "assets/logo_gold.png";
+      logoImg.alt = "13 MIRRORS · Калейдоскоп твоих миров";
+      logo.appendChild(logoImg);
+      stage.appendChild(logo);
+
+      var textsShown = false;
+      function showFinaleTexts() {
+        if (textsShown) return;
+        textsShown = true;
+        line1.classList.add("is-visible");
+        setTimeout(function () { line2.classList.add("is-visible"); }, 700);
+        setTimeout(function () { logo.classList.add("is-visible"); }, 700);
+      }
+
       var revealed = false;
       var fallbackDone = false;
       function reveal() {
@@ -553,18 +883,36 @@
         startImg.style.opacity = "0";
       }
       // Если видео вообще не может проиграться в этом браузере (не тот формат,
-      // сеть и т.п.) — не оставляем пользователя на чёрном экране, а сразу
-      // показываем финальный кадр и тексты.
+      // сеть и т.п.) — единственный случай, когда остаётся статичный кадр:
+      // самого видео не было, показать нечего кроме стоп-кадра с текстом.
       function fallbackToFinal() {
         if (fallbackDone) return;
         fallbackDone = true;
+        // убираем ещё не показанный оверлей/логотип этого запуска — иначе
+        // finishFinaleScene() добавит второй комплект поверх
+        overlay.remove();
+        logo.remove();
         App.finishFinaleScene(stage, /*fromEnd*/ true);
       }
 
       video.addEventListener("playing", reveal);
       video.addEventListener("error", fallbackToFinal);
+
+      // Текст проявляется заранее относительно фактического конца ролика —
+      // ещё во время движения рук, а не после его завершения.
+      var textScheduled = false;
+      video.addEventListener("timeupdate", function () {
+        if (textScheduled || !video.duration || !isFinite(video.duration)) return;
+        if (video.duration - video.currentTime <= 3.4) {
+          textScheduled = true;
+          showFinaleTexts();
+        }
+      });
       video.addEventListener("ended", function () {
-        App.finishFinaleScene(stage, /*fromEnd*/ true);
+        // Видео просто доигрывает и естественно останавливается на
+        // последнем кадре namaste — никакой замены на статичное изображение.
+        showFinaleTexts();
+        lsSet(LS.FINALE_PLAYED, App.state.todayKey);
       });
 
       var playAttempted = false;
@@ -615,6 +963,11 @@
       stage.appendChild(btn);
     },
 
+    // Только запасной сценарий: видео в этом браузере не воспроизвелось вовсе
+    // (ошибка / неподдерживаемый формат) — единственный случай, когда
+    // показывается статичный стоп-кадр с наложенным текстом. При обычном
+    // проигрывании эта функция больше не вызывается (см. startDay13Finale —
+    // текст и логотип теперь идут поверх ещё играющего видео, хотфикс 3.2 п.7).
     finishFinaleScene: function (stage, fromEnd) {
       // финальный кадр
       var existingVideo = stage.querySelector("video");
@@ -624,13 +977,28 @@
       finalImg.alt = "";
       stage.appendChild(finalImg);
 
+      // TEMP_OVERLAY — см. комментарий выше метода.
+      // Раздел 24 ТЗ: в левом верхнем углу, строки появляются по очереди —
+      // сначала «Маршрут пройден.», следом курсивом «Увидимся за поворотом…».
       var overlay = el("div", "finale-text-overlay");
-      CFG.finale.lines.forEach(function (line) {
-        overlay.appendChild(el("div", "line", line));
-      });
+      var line1 = el("div", "line line-1", CFG.finale.lines[0]);
+      var line2 = el("div", "line line-2", CFG.finale.lines[1]);
+      overlay.appendChild(line1);
+      overlay.appendChild(line2);
       stage.appendChild(overlay);
+
+      // Настоящий логотип 13 MIRRORS, перекрашенный в золото (раздел 26 ТЗ)
+      var logo = el("div", "finale-logo");
+      var logoImg = el("img", null);
+      logoImg.src = "assets/logo_gold.png";
+      logoImg.alt = "13 MIRRORS · Калейдоскоп твоих миров";
+      logo.appendChild(logoImg);
+      stage.appendChild(logo);
+
       requestAnimationFrame(function () {
-        setTimeout(function () { overlay.classList.add("is-visible"); }, 250);
+        setTimeout(function () { line1.classList.add("is-visible"); }, 300);
+        setTimeout(function () { line2.classList.add("is-visible"); }, 1300);
+        setTimeout(function () { logo.classList.add("is-visible"); }, 1300);
       });
 
       if (fromEnd) {
@@ -648,11 +1016,19 @@
       finalImg.alt = "";
       stage.appendChild(finalImg);
 
-      var overlay = el("div", "finale-text-overlay is-visible");
-      CFG.finale.lines.forEach(function (line) {
-        overlay.appendChild(el("div", "line", line));
-      });
+      var overlay = el("div", "finale-text-overlay");
+      overlay.appendChild(el("div", "line line-1 is-visible", CFG.finale.lines[0]));
+      overlay.appendChild(el("div", "line line-2 is-visible", CFG.finale.lines[1]));
       stage.appendChild(overlay);
+
+      // Настоящий логотип 13 MIRRORS, перекрашенный в золото (раздел 26 ТЗ)
+      var logo = el("div", "finale-logo is-visible");
+      var logoImg = el("img", null);
+      logoImg.src = "assets/logo_gold.png";
+      logoImg.alt = "13 MIRRORS · Калейдоскоп твоих миров";
+      logo.appendChild(logoImg);
+      stage.appendChild(logo);
+
       root.appendChild(stage);
       showScreen("finale");
     }
